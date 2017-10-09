@@ -6,7 +6,7 @@ public class Constants {
     public static final String PLATFORM = "Android";
     public static final String VERSION = "2.14.0";
 
-    public static final String EVENT_LOG_URL = "https://api.amplitude.com/";
+    public static final String EVENT_LOG_URL = "https://www.patreon.com/api/tracking";
 
     public static final String PACKAGE_NAME = "com.amplitude.api";
 

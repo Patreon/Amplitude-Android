@@ -62,6 +62,10 @@ public class AmplitudeClient {
      */
     public static final String USER_ID_KEY = "user_id";
     /**
+     * The pref/database key for the user auth token.
+     */
+    public static final String AUTH_TOKEN_KEY = "auth_token";
+    /**
      * The pref/database key for the opt out flag.
      */
     public static final String OPT_OUT_KEY = "opt_out";
@@ -112,6 +116,10 @@ public class AmplitudeClient {
      * The user's ID value.
      */
     protected String userId;
+    /**
+     * The user's auth token.
+     */
+    protected String authToken;
     /**
      * The user's Device ID value.
      */
@@ -1501,6 +1509,31 @@ public class AmplitudeClient {
     }
 
     /**
+     * Sets the auth token (can be null).
+     *
+     * @param authToken the auth token
+     * @return the AmplitudeClient
+     */
+    public AmplitudeClient setAuthToken(final String authToken) {
+        if (!contextAndApiKeySet("setAuthToken()")) {
+            return this;
+        }
+
+        final AmplitudeClient client = this;
+        runOnLogThread(new Runnable() {
+            @Override
+            public void run() {
+                if (TextUtils.isEmpty(client.apiKey)) {  // in case initialization failed
+                    return;
+                }
+                client.authToken = authToken;
+                dbHelper.insertOrReplaceKeyValue(AUTH_TOKEN_KEY, authToken);
+            }
+        });
+        return this;
+    }
+
+    /**
      * Sets a custom device id. <b>Note: only do this if you know what you are doing!</b>
      *
      * @param deviceId the device id
@@ -1758,6 +1791,7 @@ public class AmplitudeClient {
         Request request;
         try {
              request = new Request.Builder()
+                .addHeader("authorization", authToken)
                 .url(url)
                 .post(body)
                 .build();
