@@ -63,10 +63,6 @@ public class AmplitudeClient {
      */
     public static final String USER_ID_KEY = "user_id";
     /**
-     * The pref/database key for the user auth token.
-     */
-    public static final String AUTH_TOKEN_KEY = "auth_token";
-    /**
      * The pref/database key for the opt out flag.
      */
     public static final String OPT_OUT_KEY = "opt_out";
@@ -1710,7 +1706,6 @@ public class AmplitudeClient {
                     return;
                 }
                 client.authToken = authToken;
-                dbHelper.insertOrReplaceKeyValue(AUTH_TOKEN_KEY, authToken);
             }
         });
         return this;
