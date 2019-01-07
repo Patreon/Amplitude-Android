@@ -1,5 +1,52 @@
 ## Unreleased
 
+## 2.21.0 (December 05, 2018)
+
+* Update SDK to better handle when the SQLite database file gets corrupted between interactions.
+* Add optional diagnostic logging that tracks exceptions thrown in the SDK and sends to Amplitude.
+
+## 2.20.0 (October 15, 2018)
+
+* Add ability to set group properties via a new `groupIdentify` method that takes in an `Identify` object as well as a group type and group name.
+
+## 2.19.1 (August 14, 2018)
+
+* Update SDK to better handle SQLite Exceptions.
+
+## 2.19.0 (July 24, 2018)
+
+* Add `TrackingOptions` interface to customize the automatic tracking of user properties in the SDK (such as language, ip_address, platform, etc). See [Help Center Documentation](https://amplitude.zendesk.com/hc/en-us/articles/115002935588#disable-automatic-tracking-of-properties) for instructions on setting up this configuration.
+
+## 2.18.2 (July 24, 2018)
+
+* Use randomly generated device id if user has limitAdTracking enabled.
+
+## 2.18.1 (May 07, 2018)
+
+* Updating to [OkHttp 3.10.0](https://github.com/square/okhttp/blob/master/CHANGELOG.md#version-3100)
+* Lowering event upload max batch size from 100 to 50. This should help to avoid out of memory issues on Android devices with low memory.
+
+## 2.18.0 (April 19, 2018)
+
+* Added a `setUserId` method with optional boolean argument `startNewSession`, which when `true` starts a new session after changing the userId.
+
+## 2.17.0 (February 05, 2018)
+
+* Add ability to specify a custom `platform` value during initialization as an input argument. If the value is `null` or an empty string then `platform` will default to `Android`.
+
+## 2.16.0 (November 27, 2017)
+
+* Expose a public `getUserPropertiesOperations` method on the `Identify` class.
+* Handle exceptions when the LocationManager is not available for fetching location.
+
+## 2.15.0 (October 04, 2017)
+
+* Updating to latest version of OkHttp3 ([3.9.0](https://github.com/square/okhttp/blob/master/CHANGELOG.md#version-390))
+
+## 2.14.1 (July 27, 2017)
+
+* Switch to an internal implementation of `isEmptyString` instead of Android TextUtils.
+
 ## 2.14.0 (July 05, 2017)
 
 * Add support for logging events to multiple Amplitude apps. See our [Help Center Documentation](https://amplitude.zendesk.com/hc/en-us/articles/115002935588#logging-events-to-multiple-projects) for details.

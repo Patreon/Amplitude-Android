@@ -3,12 +3,12 @@ package com.amplitude.api;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.DatabaseErrorHandler;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteDoneException;
 import android.database.sqlite.SQLiteException;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.database.sqlite.SQLiteStatement;
-import android.text.TextUtils;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -48,8 +48,10 @@ class DatabaseHelper extends SQLiteOpenHelper {
             + IDENTIFY_TABLE_NAME + " (" + ID_FIELD + " INTEGER PRIMARY KEY AUTOINCREMENT, "
             + EVENT_FIELD + " TEXT);";
 
-    private File file;
+    File file;
     private String instanceName;
+    private boolean callResetListenerOnDatabaseReset = true;
+    private DatabaseResetListener databaseResetListener;
 
     private static final AmplitudeLog logger = AmplitudeLog.getLogger();
 
@@ -69,7 +71,7 @@ class DatabaseHelper extends SQLiteOpenHelper {
     }
 
     private static String getDatabaseName(String instance) {
-        return (TextUtils.isEmpty(instance) || instance.equals(Constants.DEFAULT_INSTANCE)) ? Constants.DATABASE_NAME : Constants.DATABASE_NAME + "_" + instance;
+        return (Utils.isEmptyString(instance) || instance.equals(Constants.DEFAULT_INSTANCE)) ? Constants.DATABASE_NAME : Constants.DATABASE_NAME + "_" + instance;
     }
 
     protected DatabaseHelper(Context context) {
@@ -82,6 +84,10 @@ class DatabaseHelper extends SQLiteOpenHelper {
         instanceName = Utils.normalizeInstanceName(instance);
     }
 
+    void setDatabaseResetListener(DatabaseResetListener databaseResetListener) {
+        this.databaseResetListener = databaseResetListener;
+    }
+
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL(CREATE_STORE_TABLE);
@@ -91,6 +97,25 @@ class DatabaseHelper extends SQLiteOpenHelper {
         // lifetime of the table, even if rows get removed
         db.execSQL(CREATE_EVENTS_TABLE);
         db.execSQL(CREATE_IDENTIFYS_TABLE);
+
+        // NOTE: the database file can become corrupted between interactions
+        // getWriteableDatabase and getReadableDatabase will test for corruption
+        // and actually delete the database file and call onCreate again if it's corrupted
+        // Our normal catch exception and delete database does not get triggered in this scenario
+        // Therefore we are also calling the reset callback inside onCreate
+        if (databaseResetListener != null && callResetListenerOnDatabaseReset) {
+            try {
+                callResetListenerOnDatabaseReset = false;  // guards against stack overflow
+                databaseResetListener.onDatabaseReset(db);
+            } catch (SQLiteException e) {
+                logger.e(TAG, String.format("databaseReset callback failed during onCreate"), e);
+                Diagnostics.getLogger().logError(
+                    String.format("DB: Failed to run databaseReset callback during onCreate"), e
+                );
+            } finally {
+                callResetListenerOnDatabaseReset = true;
+            }
+        }
     }
 
     @Override
@@ -144,36 +169,55 @@ class DatabaseHelper extends SQLiteOpenHelper {
 
     synchronized long insertOrReplaceKeyValueToTable(String table, String key, Object value) {
         long result = -1;
+        SQLiteDatabase db = null;
         try {
-            SQLiteDatabase db = getWritableDatabase();
-            ContentValues contentValues = new ContentValues();
-            contentValues.put(KEY_FIELD, key);
-            if (value instanceof Long) {
-                contentValues.put(VALUE_FIELD, (Long) value);
-            } else {
-                contentValues.put(VALUE_FIELD, (String) value);
-            }
-            result = db.insertWithOnConflict(
-                    table,
-                    null,
-                    contentValues,
-                    SQLiteDatabase.CONFLICT_REPLACE
-            );
-            if (result == -1) {
-                logger.w(TAG, "Insert failed");
-            }
+            db = getWritableDatabase();
+            result = insertOrReplaceKeyValueToTable(db, table, key, value);
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("insertOrReplaceKeyValue in %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to insertOrReplaceKeyValue %s", key), e
+            );
             delete();
         } catch (StackOverflowError e) {
             logger.e(TAG, String.format("insertOrReplaceKeyValue in %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to insertOrReplaceKeyValue %s", key), e
+            );
             delete();
         } finally {
-            close();
+            if (db != null && db.isOpen()) {
+                close();
+            }
         }
         return result;
+    }
+
+    synchronized long insertOrReplaceKeyValueToTable(SQLiteDatabase db, String table, String key, Object value) throws SQLiteException, StackOverflowError {
+        long result = -1;
+        ContentValues contentValues = new ContentValues();
+        contentValues.put(KEY_FIELD, key);
+        if (value instanceof Long) {
+            contentValues.put(VALUE_FIELD, (Long) value);
+        } else {
+            contentValues.put(VALUE_FIELD, (String) value);
+        }
+        result = insertKeyValueContentValuesIntoTable(db, table, contentValues);
+        if (result == -1) {
+            logger.w(TAG, "Insert failed");
+        }
+        return result;
+    }
+
+    synchronized long insertKeyValueContentValuesIntoTable(SQLiteDatabase db, String table, ContentValues contentValues) throws SQLiteException, StackOverflowError {
+        return db.insertWithOnConflict(
+            table,
+            null,
+            contentValues,
+            SQLiteDatabase.CONFLICT_REPLACE
+        );
     }
 
     synchronized long deleteKeyFromTable(String table, String key) {
@@ -184,10 +228,16 @@ class DatabaseHelper extends SQLiteOpenHelper {
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("deleteKey from %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to deleteKey: %s", key), e
+            );
             delete();
         } catch (StackOverflowError e) {
             logger.e(TAG, String.format("deleteKey from %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to deleteKey: %s", key), e
+            );
             delete();
         } finally {
             close();
@@ -209,22 +259,32 @@ class DatabaseHelper extends SQLiteOpenHelper {
             SQLiteDatabase db = getWritableDatabase();
             ContentValues contentValues = new ContentValues();
             contentValues.put(EVENT_FIELD, event);
-            result = db.insert(table, null, contentValues);
+            result = insertEventContentValuesIntoTable(db, table, contentValues);
             if (result == -1) {
                 logger.w(TAG, String.format("Insert into %s failed", table));
             }
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("addEvent to %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to addEvent: %s", event), e
+            );
             delete();
         } catch (StackOverflowError e) {
             logger.e(TAG, String.format("addEvent to %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to addEvent: %s", event), e
+            );
             delete();
         } finally {
             close();
         }
         return result;
+    }
+
+    synchronized long insertEventContentValuesIntoTable(SQLiteDatabase db, String table, ContentValues contentValues) throws SQLiteException, StackOverflowError {
+        return db.insert(table, null, contentValues);
     }
 
     synchronized String getValue(String key) {
@@ -250,12 +310,21 @@ class DatabaseHelper extends SQLiteOpenHelper {
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("getValue from %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getValue: %s", key), e
+            );
             delete();
         } catch (StackOverflowError e) {
             logger.e(TAG, String.format("getValue from %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getValue: %s", key), e
+            );
             delete();
         } catch (RuntimeException e) {
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getValue: %s", key), e
+            );
             convertIfCursorWindowException(e);
         } finally {
             if (cursor != null) {
@@ -291,7 +360,7 @@ class DatabaseHelper extends SQLiteOpenHelper {
             while (cursor.moveToNext()) {
                 long eventId = cursor.getLong(0);
                 String event = cursor.getString(1);
-                if (TextUtils.isEmpty(event)) {
+                if (Utils.isEmptyString(event)) {
                     continue;
                 }
 
@@ -302,12 +371,21 @@ class DatabaseHelper extends SQLiteOpenHelper {
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("getEvents from %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getEventsFromTable %s", table), e
+            );
             delete();
         } catch (StackOverflowError e) {
-            logger.e(TAG, String.format("removeEvent from %s failed", table), e);
+            logger.e(TAG, String.format("getEvents from %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getEventsFromTable %s", table), e
+            );
             delete();
         } catch (RuntimeException e) {
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getEventsFromTable %s", table), e
+            );
             convertIfCursorWindowException(e);
         } finally {
             if (cursor != null) {
@@ -341,10 +419,16 @@ class DatabaseHelper extends SQLiteOpenHelper {
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("getNumberRows for %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getNumberRows for table %s", table), e
+            );
             delete();
         } catch (StackOverflowError e) {
             logger.e(TAG, String.format("getNumberRows for %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getNumberRows for table %s", table), e
+            );
             delete();
         } finally {
             if (statement != null) {
@@ -380,10 +464,16 @@ class DatabaseHelper extends SQLiteOpenHelper {
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("getNthEventId from %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getNthEventId from table %s", table), e
+            );
             delete();
         } catch (StackOverflowError e) {
             logger.e(TAG, String.format("getNthEventId from %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getNthEventId from table %s", table), e
+            );
             delete();
         } finally {
             if (statement != null) {
@@ -409,10 +499,16 @@ class DatabaseHelper extends SQLiteOpenHelper {
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("removeEvents from %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to removeEvents from table %s", table), e
+            );
             delete();
         } catch (StackOverflowError e) {
             logger.e(TAG, String.format("removeEvents from %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to removeEvents from table %s", table), e
+            );
             delete();
         } finally {
             close();
@@ -434,10 +530,16 @@ class DatabaseHelper extends SQLiteOpenHelper {
         } catch (SQLiteException e) {
             logger.e(TAG, String.format("removeEvent from %s failed", table), e);
             // Hard to recover from SQLiteExceptions, just start fresh
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to removeEvent from table %s", table), e
+            );
             delete();
         } catch (StackOverflowError e) {
             logger.e(TAG, String.format("removeEvent from %s failed", table), e);
             // potential stack overflow error when getting database on custom Android versions
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to removeEvent from table %s", table), e
+            );
             delete();
         } finally {
             close();
@@ -445,11 +547,35 @@ class DatabaseHelper extends SQLiteOpenHelper {
     }
 
     private void delete() {
+        // This only gets called if the database somehow gets corrupted AFTER being fetched
+        // ie after the call to getWriteableDatabase / getReadableDatabase
+        // or if a SQL exception occurs during the interaction
         try {
             close();
             file.delete();
         } catch (SecurityException e) {
             logger.e(TAG, "delete failed", e);
+            Diagnostics.getLogger().logError("DB: Failed to delete database");
+        } finally {
+            if (databaseResetListener != null && callResetListenerOnDatabaseReset) {
+                callResetListenerOnDatabaseReset = false;  // guards against stack overflow
+                SQLiteDatabase db = null;
+                try {
+                    db = getWritableDatabase();
+                    databaseResetListener.onDatabaseReset(db);
+                } catch (SQLiteException e) {
+                    logger.e(TAG, String.format("databaseReset callback failed during delete"), e);
+                    Diagnostics.getLogger().logError(
+                        String.format("DB: Failed to run databaseReset callback in delete"), e
+                    );
+                }
+                finally {
+                    callResetListenerOnDatabaseReset = true;
+                    if (db != null && db.isOpen()) {
+                        close();
+                    }
+                }
+            }
         }
     }
 
@@ -472,7 +598,7 @@ class DatabaseHelper extends SQLiteOpenHelper {
      */
     private static void convertIfCursorWindowException(RuntimeException e) {
         String message = e.getMessage();
-        if (!TextUtils.isEmpty(message) && message.startsWith("Cursor window allocation of")) {
+        if (!Utils.isEmptyString(message) && message.startsWith("Cursor window allocation of")) {
             throw new CursorWindowAllocationException(message);
         } else {
             throw e;

@@ -10,16 +10,23 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Matchers;
+import org.powermock.api.mockito.PowerMockito;
+import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 
+import okhttp3.Call;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.RecordedRequest;
 
@@ -1518,5 +1525,190 @@ public class AmplitudeClientTest extends BaseTest {
         JSONArray events = getEventsFromRequest(request);
         assertEquals(events.length(), 1);
         assertEquals(events.optJSONObject(0).optString("event_type"), "test event");
+    }
+
+    @Test
+    @PrepareForTest(OkHttpClient.class)
+    public void testHandleUploadExceptions() throws Exception {
+        ShadowLooper logLooper = Shadows.shadowOf(amplitude.logThread.getLooper());
+        ShadowLooper httpLooper = Shadows.shadowOf(amplitude.httpThread.getLooper());
+        IOException error = new IOException("test IO Exception");
+
+        // mock out client
+        OkHttpClient oldClient = amplitude.httpClient;
+        OkHttpClient mockClient = PowerMockito.mock(OkHttpClient.class);
+
+        // need to have mock client return mock call that throws exception
+        Call mockCall = PowerMockito.mock(Call.class);
+        PowerMockito.when(mockCall.execute()).thenThrow(error);
+        PowerMockito.when(mockClient.newCall(Matchers.any(Request.class))).thenReturn(mockCall);
+
+        // attach mock client to amplitude
+        amplitude.httpClient = mockClient;
+        amplitude.logEvent("test event");
+        logLooper.runToEndOfTasks();
+        logLooper.runToEndOfTasks();
+        httpLooper.runToEndOfTasks();
+
+        assertEquals(amplitude.lastError, error);
+
+        // restore old client
+        amplitude.httpClient = oldClient;
+    }
+
+    @Test
+    public void testDefaultPlatform() throws InterruptedException {
+        long [] timestamps = {1, 2, 3, 4, 5, 6, 7};
+        clock.setTimestamps(timestamps);
+        Robolectric.getForegroundThreadScheduler().advanceTo(1);
+
+        ShadowLooper looper = Shadows.shadowOf(amplitude.logThread.getLooper());
+        looper.runToEndOfTasks();
+
+        assertEquals(amplitude.platform, Constants.PLATFORM);
+
+        amplitude.logEvent("test_event1");
+        looper.runToEndOfTasks();
+        looper.runToEndOfTasks();
+
+        assertEquals(getUnsentEventCount(), 1);
+        assertEquals(getUnsentIdentifyCount(), 0);
+        JSONArray events = getUnsentEvents(1);
+        for (int i = 0; i < 1; i++) {
+            assertEquals(events.optJSONObject(i).optString("event_type"), "test_event" + (i+1));
+            assertEquals(events.optJSONObject(i).optLong("timestamp"), timestamps[i]);
+            assertEquals(events.optJSONObject(i).optString("platform"), Constants.PLATFORM);
+        }
+        runRequest(amplitude);
+    }
+
+    @Test
+    public void testOverridePlatform() throws InterruptedException {
+        long [] timestamps = {1, 2, 3, 4, 5, 6, 7};
+        clock.setTimestamps(timestamps);
+        Robolectric.getForegroundThreadScheduler().advanceTo(1);
+
+        ShadowLooper looper = Shadows.shadowOf(amplitude.logThread.getLooper());
+        looper.runToEndOfTasks();
+
+        String customPlatform = "test_custom_platform";
+
+        // force re-initialize to override platform
+        amplitude.initialized = false;
+        amplitude.initialize(context, apiKey, null, customPlatform, false);
+        looper.runToEndOfTasks();
+        looper.runToEndOfTasks();
+        assertEquals(amplitude.platform, customPlatform);
+
+        amplitude.logEvent("test_event1");
+        looper.runToEndOfTasks();
+        looper.runToEndOfTasks();
+
+        assertEquals(getUnsentEventCount(), 1);
+        assertEquals(getUnsentIdentifyCount(), 0);
+        JSONArray events = getUnsentEvents(1);
+        for (int i = 0; i < 1; i++) {
+            assertEquals(events.optJSONObject(i).optString("event_type"), "test_event" + (i+1));
+            assertEquals(events.optJSONObject(i).optLong("timestamp"), timestamps[i]);
+            assertEquals(events.optJSONObject(i).optString("platform"), customPlatform);
+        }
+        runRequest(amplitude);
+    }
+
+    @Test
+    public void testSetTrackingConfig() throws JSONException {
+        long [] timestamps = {1, 2, 3, 4, 5, 6, 7};
+        clock.setTimestamps(timestamps);
+        Robolectric.getForegroundThreadScheduler().advanceTo(1);
+
+        ShadowLooper looper = Shadows.shadowOf(amplitude.logThread.getLooper());
+        looper.runToEndOfTasks();
+
+        TrackingOptions options = new TrackingOptions().disableCity().disableCountry().disableIpAddress().disableLanguage().disableLatLng();
+        amplitude.setTrackingOptions(options);
+
+        assertEquals(amplitude.trackingOptions, options);
+        assertTrue(Utils.compareJSONObjects(amplitude.apiPropertiesTrackingOptions, options.getApiPropertiesTrackingOptions()));
+        assertFalse(amplitude.trackingOptions.shouldTrackCity());
+        assertFalse(amplitude.trackingOptions.shouldTrackCountry());
+        assertFalse(amplitude.trackingOptions.shouldTrackIpAddress());
+        assertFalse(amplitude.trackingOptions.shouldTrackLanguage());
+        assertFalse(amplitude.trackingOptions.shouldTrackLatLng());
+
+        amplitude.logEvent("test event");
+        looper.runToEndOfTasks();
+        looper.runToEndOfTasks();
+
+        JSONArray events = getUnsentEvents(1);
+        assertEquals(events.length(), 1);
+        JSONObject event = events.getJSONObject(0);
+
+        // verify we do have platform and carrier since those were not filtered out
+        assertTrue(event.has("carrier"));
+        assertTrue(event.has("platform"));
+
+        // verify we do not have any of the filtered out fields
+        assertFalse(event.has("city"));
+        assertFalse(event.has("country"));
+        assertFalse(event.has("language"));
+
+        // verify api properties contains tracking options for location filtering
+        JSONObject apiProperties = event.getJSONObject("api_properties");
+        assertFalse(apiProperties.getBoolean("limit_ad_tracking"));
+        assertFalse(apiProperties.getBoolean("gps_enabled"));
+        assertTrue(apiProperties.has("tracking_options"));
+
+        JSONObject trackingOptions = apiProperties.getJSONObject("tracking_options");
+        assertEquals(trackingOptions.length(), 4);
+        assertFalse(trackingOptions.getBoolean("city"));
+        assertFalse(trackingOptions.getBoolean("country"));
+        assertFalse(trackingOptions.getBoolean("ip_address"));
+        assertFalse(trackingOptions.getBoolean("lat_lng"));
+    }
+
+    @Test
+    public void testGroupIdentifyMultipleOperations() throws JSONException {
+        String groupType = "test group type";
+        String groupName = "test group name";
+
+        String property1 = "string value";
+        String value1 = "testValue";
+
+        String property2 = "double value";
+        double value2 = 0.123;
+
+        String property3 = "boolean value";
+        boolean value3 = true;
+
+        String property4 = "json value";
+
+        Identify identify = new Identify().setOnce(property1, value1).add(property2, value2);
+        identify.set(property3, value3).unset(property4);
+
+        // identify should ignore this since duplicate key
+        identify.set(property4, value3);
+
+        amplitude.groupIdentify(groupType, groupName, identify);
+        Shadows.shadowOf(amplitude.logThread.getLooper()).runToEndOfTasks();
+        assertEquals(getUnsentIdentifyCount(), 1);
+        assertEquals(getUnsentEventCount(), 0);
+        JSONObject event = getLastUnsentIdentify();
+        assertEquals(Constants.GROUP_IDENTIFY_EVENT, event.optString("event_type"));
+
+        assertTrue(Utils.compareJSONObjects(event.optJSONObject("event_properties"), new JSONObject()));
+        assertTrue(Utils.compareJSONObjects(event.optJSONObject("user_properties"), new JSONObject()));
+
+        JSONObject groups = event.optJSONObject("groups");
+        JSONObject expectedGroups = new JSONObject();
+        expectedGroups.put(groupType, groupName);
+        assertTrue(Utils.compareJSONObjects(groups, expectedGroups));
+
+        JSONObject groupProperties = event.optJSONObject("group_properties");
+        JSONObject expected = new JSONObject();
+        expected.put(Constants.AMP_OP_SET_ONCE, new JSONObject().put(property1, value1));
+        expected.put(Constants.AMP_OP_ADD, new JSONObject().put(property2, value2));
+        expected.put(Constants.AMP_OP_SET, new JSONObject().put(property3, value3));
+        expected.put(Constants.AMP_OP_UNSET, new JSONObject().put(property4, "-"));
+        assertTrue(Utils.compareJSONObjects(groupProperties, expected));
     }
 }

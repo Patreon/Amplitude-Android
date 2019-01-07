@@ -1,7 +1,5 @@
 package com.amplitude.api;
 
-import android.text.TextUtils;
-
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -958,7 +956,7 @@ public class Identify {
 
 
     private void addToUserProperties(String operation, String property, Object value) {
-        if (TextUtils.isEmpty(property)) {
+        if (Utils.isEmptyString(property)) {
             AmplitudeLog.getLogger().w(TAG, String.format(
                "Attempting to perform operation %s with a null or empty string property, ignoring",
                 operation
@@ -1100,5 +1098,19 @@ public class Identify {
             "This version of set is deprecated. Please use one with a different signature."
         );
         return this;
+    }
+
+    /**
+     * Public method that exposes the user property operations JSON blob.
+      * @return a copy of the User Property Operations JSONObject. If copying fails, returns
+     *      an empty JSONObject
+     */
+    public JSONObject getUserPropertiesOperations() {
+        try {
+            return new JSONObject(userPropertiesOperations.toString());
+        } catch (JSONException e) {
+            AmplitudeLog.getLogger().e(TAG, e.toString());
+        }
+        return new JSONObject();
     }
 }

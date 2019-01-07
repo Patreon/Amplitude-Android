@@ -4,7 +4,7 @@ public class Constants {
 
     public static final String LIBRARY = "amplitude-android";
     public static final String PLATFORM = "Android";
-    public static final String VERSION = "2.14.0";
+    public static final String VERSION = "2.21.0";
 
     public static final String EVENT_LOG_URL = "https://www.patreon.com/api/tracking";
 
@@ -18,7 +18,7 @@ public class Constants {
     public static final String DEFAULT_INSTANCE = "$default_instance";
 
     public static final int EVENT_UPLOAD_THRESHOLD = 30;
-    public static final int EVENT_UPLOAD_MAX_BATCH_SIZE = 100;
+    public static final int EVENT_UPLOAD_MAX_BATCH_SIZE = 50;
     public static final int EVENT_MAX_COUNT = 1000;
     public static final int EVENT_REMOVE_BATCH_SIZE = 20;
     public static final long EVENT_UPLOAD_PERIOD_MILLIS = 30 * 1000; // 30s
@@ -37,6 +37,7 @@ public class Constants {
     public static final String PREFKEY_OPT_OUT = PACKAGE_NAME + ".optOut";
 
     public static final String IDENTIFY_EVENT = "$identify";
+    public static final String GROUP_IDENTIFY_EVENT = "$groupidentify";
     public static final String AMP_OP_ADD = "$add";
     public static final String AMP_OP_APPEND = "$append";
     public static final String AMP_OP_CLEAR_ALL = "$clearAll";
@@ -52,4 +53,21 @@ public class Constants {
     public static final String AMP_REVENUE_REVENUE_TYPE = "$revenueType";
     public static final String AMP_REVENUE_RECEIPT = "$receipt";
     public static final String AMP_REVENUE_RECEIPT_SIG = "$receiptSig";
+
+    public static final String AMP_TRACKING_OPTION_ADID = "adid";
+    public static final String AMP_TRACKING_OPTION_CARRIER = "carrier";
+    public static final String AMP_TRACKING_OPTION_CITY = "city";
+    public static final String AMP_TRACKING_OPTION_COUNTRY = "country";
+    public static final String AMP_TRACKING_OPTION_DEVICE_BRAND = "device_brand";
+    public static final String AMP_TRACKING_OPTION_DEVICE_MANUFACTURER = "device_manufacturer";
+    public static final String AMP_TRACKING_OPTION_DEVICE_MODEL = "device_model";
+    public static final String AMP_TRACKING_OPTION_DMA = "dma";
+    public static final String AMP_TRACKING_OPTION_IP_ADDRESS = "ip_address";
+    public static final String AMP_TRACKING_OPTION_LANGUAGE = "language";
+    public static final String AMP_TRACKING_OPTION_LAT_LNG = "lat_lng";
+    public static final String AMP_TRACKING_OPTION_OS_NAME = "os_name";
+    public static final String AMP_TRACKING_OPTION_OS_VERSION = "os_version";
+    public static final String AMP_TRACKING_OPTION_PLATFORM = "platform";
+    public static final String AMP_TRACKING_OPTION_REGION = "region";
+    public static final String AMP_TRACKING_OPTION_VERSION_NAME = "version_name";
 }

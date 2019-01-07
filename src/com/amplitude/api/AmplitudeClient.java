@@ -3,9 +3,9 @@ package com.amplitude.api;
 import android.app.Application;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.database.sqlite.SQLiteDatabase;
 import android.location.Location;
 import android.os.Build;
-import android.text.TextUtils;
 import android.util.Pair;
 
 import com.amplitude.security.MD5;
@@ -17,6 +17,7 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
+import java.sql.SQLException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -129,6 +130,13 @@ public class AmplitudeClient {
     protected boolean initialized = false;
     private boolean optOut = false;
     private boolean offline = false;
+    TrackingOptions trackingOptions = new TrackingOptions();
+    JSONObject apiPropertiesTrackingOptions;
+
+    /**
+     * The device's Platform value.
+     */
+    protected String platform;
 
     /**
      * Event metadata
@@ -221,13 +229,28 @@ public class AmplitudeClient {
      * @param userId  the user id to set
      * @return the AmplitudeClient
      */
-    public synchronized AmplitudeClient initialize(final Context context, final String apiKey, final String userId) {
+    public AmplitudeClient initialize(Context context, String apiKey, String userId) {
+        return initialize(context, apiKey, userId, null, false);
+    }
+
+    /**
+     * Initialize the Amplitude SDK with the Android application context, your Amplitude App API
+     * key, a user ID for the current user, and a custom platform value.
+     * <b>Note:</b> initialization is required before you log events and modify user properties.
+     *
+     * @param context the Android application context
+     * @param apiKey  your Amplitude App API key
+     * @param userId  the user id to set
+     * @param
+     * @return the AmplitudeClient
+     */
+    public synchronized AmplitudeClient initialize(final Context context, final String apiKey, final String userId, final String platform, final boolean enableDiagnosticLogging) {
         if (context == null) {
             logger.e(TAG, "Argument context cannot be null in initialize()");
             return this;
         }
 
-        if (TextUtils.isEmpty(apiKey)) {
+        if (Utils.isEmptyString(apiKey)) {
             logger.e(TAG, "Argument apiKey cannot be null or blank in initialize()");
             return this;
         }
@@ -235,6 +258,7 @@ public class AmplitudeClient {
         this.context = context.getApplicationContext();
         this.apiKey = apiKey;
         this.dbHelper = DatabaseHelper.getDatabaseHelper(this.context, this.instanceName);
+        this.platform = Utils.isEmptyString(platform) ? Constants.PLATFORM : platform;
 
         final AmplitudeClient client = this;
         runOnLogThread(new Runnable() {
@@ -248,7 +272,12 @@ public class AmplitudeClient {
                             AmplitudeClient.upgradeSharedPrefsToDB(context);
                         }
                         httpClient = new OkHttpClient();
-                        initializeDeviceInfo();
+                        deviceInfo = new DeviceInfo(context);
+                        deviceId = initializeDeviceId();
+                        if (enableDiagnosticLogging) {
+                            Diagnostics.getLogger().enableLogging(httpClient, apiKey, deviceId);
+                        }
+                        deviceInfo.prefetch();
 
                         if (userId != null) {
                             client.userId = userId;
@@ -256,7 +285,7 @@ public class AmplitudeClient {
                         } else {
                             client.userId = dbHelper.getValue(USER_ID_KEY);
                         }
-                        Long optOutLong = dbHelper.getLongValue(OPT_OUT_KEY);
+                        final Long optOutLong = dbHelper.getLongValue(OPT_OUT_KEY);
                         optOut = optOutLong != null && optOutLong == 1;
 
                         // try to restore previous session id
@@ -271,12 +300,25 @@ public class AmplitudeClient {
                         lastIdentifyId = getLongvalue(LAST_IDENTIFY_ID_KEY, -1);
                         lastEventTime = getLongvalue(LAST_EVENT_TIME_KEY, -1);
 
+                        // install database reset listener to re-insert metadata in memory
+                        dbHelper.setDatabaseResetListener(new DatabaseResetListener() {
+                            @Override
+                            public void onDatabaseReset(SQLiteDatabase db) {
+                                dbHelper.insertOrReplaceKeyValueToTable(db, DatabaseHelper.STORE_TABLE_NAME, DEVICE_ID_KEY, client.deviceId);
+                                dbHelper.insertOrReplaceKeyValueToTable(db, DatabaseHelper.STORE_TABLE_NAME, USER_ID_KEY, client.userId);
+                                dbHelper.insertOrReplaceKeyValueToTable(db, DatabaseHelper.LONG_STORE_TABLE_NAME, OPT_OUT_KEY, client.optOut ? 1L : 0L);
+                                dbHelper.insertOrReplaceKeyValueToTable(db, DatabaseHelper.LONG_STORE_TABLE_NAME, PREVIOUS_SESSION_ID_KEY, client.sessionId);
+                                dbHelper.insertOrReplaceKeyValueToTable(db, DatabaseHelper.LONG_STORE_TABLE_NAME, LAST_EVENT_TIME_KEY, client.lastEventTime);
+                            }
+                        });
+
                         initialized = true;
 
                     } catch (CursorWindowAllocationException e) {  // treat as uninitialized SDK
                         logger.e(TAG, String.format(
                            "Failed to initialize Amplitude SDK due to: %s", e.getMessage()
                         ));
+                        Diagnostics.getLogger().logError("Failed to initialize Amplitude SDK", e);
                         client.apiKey = null;
                     }
                 }
@@ -304,6 +346,24 @@ public class AmplitudeClient {
             app.registerActivityLifecycleCallbacks(new AmplitudeCallbacks(this));
         }
 
+        return this;
+    }
+
+    public AmplitudeClient enableDiagnosticLogging() {
+        if (!contextAndApiKeySet("enableDiagnosticLogging")) {
+            return this;
+        }
+        Diagnostics.getLogger().enableLogging(httpClient, apiKey, deviceId);
+        return this;
+    }
+
+    public AmplitudeClient disableDiagnosticLogging() {
+        Diagnostics.getLogger().disableLogging();
+        return this;
+    }
+
+    public AmplitudeClient setDiagnosticEventMaxCount(int eventMaxCount) {
+        Diagnostics.getLogger().setDiagnosticEventMaxCount(eventMaxCount);
         return this;
     }
 
@@ -454,6 +514,12 @@ public class AmplitudeClient {
         return this;
     }
 
+    public AmplitudeClient setTrackingOptions(TrackingOptions trackingOptions) {
+        this.trackingOptions = trackingOptions;
+        this.apiPropertiesTrackingOptions = trackingOptions.getApiPropertiesTrackingOptions();
+        return this;
+    }
+
     /**
      * Sets opt out. If true then the SDK does not track any events for the user.
      *
@@ -469,7 +535,7 @@ public class AmplitudeClient {
         runOnLogThread(new Runnable() {
             @Override
             public void run() {
-                if (TextUtils.isEmpty(apiKey)) { // in case initialization failed
+                if (Utils.isEmptyString(apiKey)) { // in case initialization failed
                     return;
                 }
                 client.optOut = optOut;
@@ -679,7 +745,8 @@ public class AmplitudeClient {
     public void logEvent(String eventType, JSONObject eventProperties, JSONObject groups, long timestamp, boolean outOfSession) {
         if (validateLogEvent(eventType)) {
             logEventAsync(
-                eventType, eventProperties, null, null, groups, timestamp, outOfSession
+                eventType, eventProperties, null, null, groups, null,
+                timestamp, outOfSession
             );
         }
     }
@@ -787,7 +854,7 @@ public class AmplitudeClient {
      */
     public void logEventSync(String eventType, JSONObject eventProperties, JSONObject groups, long timestamp, boolean outOfSession) {
         if (validateLogEvent(eventType)) {
-            logEvent(eventType, eventProperties, null, null, groups, timestamp, outOfSession);
+            logEvent(eventType, eventProperties, null, null, groups, null, timestamp, outOfSession);
         }
     }
 
@@ -799,7 +866,7 @@ public class AmplitudeClient {
      * @return true if the event type is valid
      */
     protected boolean validateLogEvent(String eventType) {
-        if (TextUtils.isEmpty(eventType)) {
+        if (Utils.isEmptyString(eventType)) {
             logger.e(TAG, "Argument eventType cannot be null or blank in logEvent()");
             return false;
         }
@@ -819,8 +886,8 @@ public class AmplitudeClient {
      * @param outOfSession    the out of session
      */
     protected void logEventAsync(final String eventType, JSONObject eventProperties,
-            final JSONObject apiProperties, JSONObject userProperties,
-            JSONObject groups, final long timestamp, final boolean outOfSession) {
+            JSONObject apiProperties, JSONObject userProperties, JSONObject groups,
+            JSONObject groupProperties, final long timestamp, final boolean outOfSession) {
         // Clone the incoming eventProperties object before sending over
         // to the log thread. Helps avoid ConcurrentModificationException
         // if the caller starts mutating the object they passed in.
@@ -828,6 +895,10 @@ public class AmplitudeClient {
         // to hit concurrent access if the caller mutates deep in the object.
         if (eventProperties != null) {
             eventProperties = Utils.cloneJSONObject(eventProperties);
+        }
+
+        if (apiProperties != null) {
+            apiProperties = Utils.cloneJSONObject(apiProperties);
         }
 
         if (userProperties != null) {
@@ -838,18 +909,24 @@ public class AmplitudeClient {
             groups = Utils.cloneJSONObject(groups);
         }
 
+        if (groupProperties != null) {
+            groupProperties = Utils.cloneJSONObject(groupProperties);
+        }
+
         final JSONObject copyEventProperties = eventProperties;
+        final JSONObject copyApiProperties = apiProperties;
         final JSONObject copyUserProperties = userProperties;
         final JSONObject copyGroups = groups;
+        final JSONObject copyGroupProperties = groupProperties;
         runOnLogThread(new Runnable() {
             @Override
             public void run() {
-                if (TextUtils.isEmpty(apiKey)) {  // in case initialization failed
+                if (Utils.isEmptyString(apiKey)) {  // in case initialization failed
                     return;
                 }
                 logEvent(
-                    eventType, copyEventProperties, apiProperties,
-                    copyUserProperties, copyGroups, timestamp, outOfSession
+                    eventType, copyEventProperties, copyApiProperties,
+                    copyUserProperties, copyGroups, copyGroupProperties, timestamp, outOfSession
                 );
             }
         });
@@ -869,7 +946,8 @@ public class AmplitudeClient {
      * @return the event ID if succeeded, else -1.
      */
     protected long logEvent(String eventType, JSONObject eventProperties, JSONObject apiProperties,
-            JSONObject userProperties, JSONObject groups, long timestamp, boolean outOfSession) {
+            JSONObject userProperties, JSONObject groups, JSONObject groupProperties,
+            long timestamp, boolean outOfSession) {
         logger.d(TAG, "Logged event to Amplitude: " + eventType);
 
         if (optOut) {
@@ -897,18 +975,39 @@ public class AmplitudeClient {
             event.put("user_id", replaceWithJSONNull(userId));
             event.put("device_id", replaceWithJSONNull(deviceId));
             event.put("session_id", outOfSession ? -1 : sessionId);
-            event.put("version_name", replaceWithJSONNull(deviceInfo.getVersionName()));
-            event.put("os_name", replaceWithJSONNull(deviceInfo.getOsName()));
-            event.put("os_version", replaceWithJSONNull(deviceInfo.getOsVersion()));
-            event.put("device_brand", replaceWithJSONNull(deviceInfo.getBrand()));
-            event.put("device_manufacturer", replaceWithJSONNull(deviceInfo.getManufacturer()));
-            event.put("device_model", replaceWithJSONNull(deviceInfo.getModel()));
-            event.put("carrier", replaceWithJSONNull(deviceInfo.getCarrier()));
-            event.put("country", replaceWithJSONNull(deviceInfo.getCountry()));
-            event.put("language", replaceWithJSONNull(deviceInfo.getLanguage()));
-            event.put("platform", Constants.PLATFORM);
             event.put("uuid", UUID.randomUUID().toString());
             event.put("sequence_number", getNextSequenceNumber());
+
+            if (trackingOptions.shouldTrackVersionName()) {
+                event.put("version_name", replaceWithJSONNull(deviceInfo.getVersionName()));
+            }
+            if (trackingOptions.shouldTrackOsName()) {
+                event.put("os_name", replaceWithJSONNull(deviceInfo.getOsName()));
+            }
+            if (trackingOptions.shouldTrackOsVersion()) {
+                event.put("os_version", replaceWithJSONNull(deviceInfo.getOsVersion()));
+            }
+            if (trackingOptions.shouldTrackDeviceBrand()) {
+                event.put("device_brand", replaceWithJSONNull(deviceInfo.getBrand()));
+            }
+            if (trackingOptions.shouldTrackDeviceManufacturer()) {
+                event.put("device_manufacturer", replaceWithJSONNull(deviceInfo.getManufacturer()));
+            }
+            if (trackingOptions.shouldTrackDeviceModel()) {
+                event.put("device_model", replaceWithJSONNull(deviceInfo.getModel()));
+            }
+            if (trackingOptions.shouldTrackCarrier()) {
+                event.put("carrier", replaceWithJSONNull(deviceInfo.getCarrier()));
+            }
+            if (trackingOptions.shouldTrackCountry()) {
+                event.put("country", replaceWithJSONNull(deviceInfo.getCountry()));
+            }
+            if (trackingOptions.shouldTrackLanguage()) {
+                event.put("language", replaceWithJSONNull(deviceInfo.getLanguage()));
+            }
+            if (trackingOptions.shouldTrackPlatform()) {
+                event.put("platform", platform);
+            }
 
             JSONObject library = new JSONObject();
             library.put("name", Constants.LIBRARY);
@@ -916,14 +1015,20 @@ public class AmplitudeClient {
             event.put("library", library);
 
             apiProperties = (apiProperties == null) ? new JSONObject() : apiProperties;
-            Location location = deviceInfo.getMostRecentLocation();
-            if (location != null) {
-                JSONObject locationJSON = new JSONObject();
-                locationJSON.put("lat", location.getLatitude());
-                locationJSON.put("lng", location.getLongitude());
-                apiProperties.put("location", locationJSON);
+            if (apiPropertiesTrackingOptions != null && apiPropertiesTrackingOptions.length() > 0) {
+                apiProperties.put("tracking_options", apiPropertiesTrackingOptions);
             }
-            if (deviceInfo.getAdvertisingId() != null) {
+
+            if (trackingOptions.shouldTrackLatLng()) {
+                Location location = deviceInfo.getMostRecentLocation();
+                if (location != null) {
+                    JSONObject locationJSON = new JSONObject();
+                    locationJSON.put("lat", location.getLatitude());
+                    locationJSON.put("lng", location.getLongitude());
+                    apiProperties.put("location", locationJSON);
+                }
+            }
+            if (trackingOptions.shouldTrackAdid() && deviceInfo.getAdvertisingId() != null) {
                 apiProperties.put("androidADID", deviceInfo.getAdvertisingId());
             }
             apiProperties.put("limit_ad_tracking", deviceInfo.isLimitAdTrackingEnabled());
@@ -935,12 +1040,17 @@ public class AmplitudeClient {
             event.put("user_properties", (userProperties == null) ? new JSONObject()
                 : truncate(userProperties));
             event.put("groups", (groups == null) ? new JSONObject() : truncate(groups));
+            event.put("group_properties", (groupProperties == null) ? new JSONObject()
+                : truncate(groupProperties));
 
             result = saveEvent(eventType, event);
         } catch (JSONException e) {
             logger.e(TAG, String.format(
                 "JSON Serialization of event type %s failed, skipping: %s", eventType, e.toString()
             ));
+            Diagnostics.getLogger().logError(
+                String.format("Failed to JSON serialize event type %s", eventType), e
+            );
         }
 
         return result;
@@ -955,14 +1065,14 @@ public class AmplitudeClient {
      */
     protected long saveEvent(String eventType, JSONObject event) {
         String eventString = event.toString();
-        if (TextUtils.isEmpty(eventString)) {
+        if (Utils.isEmptyString(eventString)) {
             logger.e(TAG, String.format(
                 "Detected empty event string for event type %s, skipping", eventType
             ));
             return -1;
         }
 
-        if (eventType.equals(Constants.IDENTIFY_EVENT)) {
+        if (eventType.equals(Constants.IDENTIFY_EVENT) || eventType.equals(Constants.GROUP_IDENTIFY_EVENT)) {
             lastIdentifyId = dbHelper.addIdentify(eventString);
             setLastIdentifyId(lastIdentifyId);
         } else {
@@ -989,7 +1099,10 @@ public class AmplitudeClient {
             updateServerLater(eventUploadPeriodMillis);
         }
 
-        return eventType.equals(Constants.IDENTIFY_EVENT) ? lastIdentifyId : lastEventId;
+        return (
+            eventType.equals(Constants.IDENTIFY_EVENT) ||
+            eventType.equals(Constants.GROUP_IDENTIFY_EVENT)
+        ) ? lastIdentifyId : lastEventId;
     }
 
     // fetches key from dbHelper longValueStore
@@ -1149,10 +1262,13 @@ public class AmplitudeClient {
         try {
             apiProperties.put("special", sessionEvent);
         } catch (JSONException e) {
+            Diagnostics.getLogger().logError(
+                String.format("Failed to generate API Properties JSON for session event %s", sessionEvent), e
+            );
             return;
         }
 
-        logEvent(sessionEvent, null, apiProperties, null, null, lastEventTime, false);
+        logEvent(sessionEvent, null, apiProperties, null, null, null, lastEventTime, false);
     }
 
     /**
@@ -1164,7 +1280,7 @@ public class AmplitudeClient {
         runOnLogThread(new Runnable() {
             @Override
             public void run() {
-                if (TextUtils.isEmpty(apiKey)) {
+                if (Utils.isEmptyString(apiKey)) {
                     return;
                 }
                 refreshSessionTime(timestamp);
@@ -1172,6 +1288,13 @@ public class AmplitudeClient {
                 if (flushEventsOnClose) {
                     updateServer();
                 }
+
+                // re-persist metadata into database for good measure
+                dbHelper.insertOrReplaceKeyValue(DEVICE_ID_KEY, deviceId);
+                dbHelper.insertOrReplaceKeyValue(USER_ID_KEY, userId);
+                dbHelper.insertOrReplaceKeyLongValue(OPT_OUT_KEY, optOut ? 1L : 0L);
+                dbHelper.insertOrReplaceKeyLongValue(PREVIOUS_SESSION_ID_KEY, sessionId);
+                dbHelper.insertOrReplaceKeyLongValue(LAST_EVENT_TIME_KEY, lastEventTime);
             }
         });
     }
@@ -1185,7 +1308,7 @@ public class AmplitudeClient {
         runOnLogThread(new Runnable() {
             @Override
             public void run() {
-                if (TextUtils.isEmpty(apiKey)) {
+                if (Utils.isEmptyString(apiKey)) {
                     return;
                 }
                 startNewSessionIfNeeded(timestamp);
@@ -1250,10 +1373,11 @@ public class AmplitudeClient {
             apiProperties.put("receipt", receipt);
             apiProperties.put("receiptSig", receiptSignature);
         } catch (JSONException e) {
+            Diagnostics.getLogger().logError("Failed to generate API Properties JSON for revenue event", e);
         }
 
         logEventAsync(
-            Constants.AMP_REVENUE_EVENT, null, apiProperties, null, null, getCurrentTimeMillis(), false
+            Constants.AMP_REVENUE_EVENT, null, apiProperties, null, null, null, getCurrentTimeMillis(), false
         );
     }
 
@@ -1318,6 +1442,9 @@ public class AmplitudeClient {
                 identify.setUserProperty(key, sanitized.get(key));
             } catch (JSONException e) {
                 logger.e(TAG, e.toString());
+                Diagnostics.getLogger().logError(
+                    String.format("Failed to set user property %s", key), e
+                );
             }
         }
         identify(identify);
@@ -1365,7 +1492,7 @@ public class AmplitudeClient {
         ) return;
         logEventAsync(
             Constants.IDENTIFY_EVENT, null, null, identify.userPropertiesOperations,
-            null, getCurrentTimeMillis(), outOfSession
+            null, null, getCurrentTimeMillis(), outOfSession
         );
     }
 
@@ -1378,7 +1505,7 @@ public class AmplitudeClient {
      *     Setting Groups</a>
      */
     public void setGroup(String groupType, Object groupName) {
-        if (!contextAndApiKeySet("setGroup()") || TextUtils.isEmpty(groupType)) {
+        if (!contextAndApiKeySet("setGroup()") || Utils.isEmptyString(groupType)) {
             return;
         }
         JSONObject group = null;
@@ -1387,10 +1514,38 @@ public class AmplitudeClient {
         }
         catch (JSONException e) {
             logger.e(TAG, e.toString());
+            Diagnostics.getLogger().logError(
+                String.format("Failed to generate Group JSON for groupType: %s", groupType), e
+            );
         }
         Identify identify = new Identify().setUserProperty(groupType, groupName);
         logEventAsync(Constants.IDENTIFY_EVENT, null, null, identify.userPropertiesOperations,
-                group, getCurrentTimeMillis(), false);
+                group, null, getCurrentTimeMillis(), false);
+    }
+
+    public void groupIdentify(String groupType, Object groupName, Identify groupIdentify) {
+        groupIdentify(groupType, groupName, groupIdentify, false);
+    }
+
+    public void groupIdentify(String groupType, Object groupName, Identify groupIdentify, boolean outOfSession) {
+        if (
+            groupIdentify == null || groupIdentify.userPropertiesOperations.length() == 0 ||
+            !contextAndApiKeySet("groupIdentify()") || Utils.isEmptyString(groupType)
+        ) return;
+        JSONObject group = null;
+        try {
+            group = new JSONObject().put(groupType, groupName);
+        }
+        catch (JSONException e) {
+            logger.e(TAG, e.toString());
+            Diagnostics.getLogger().logError(
+                String.format("Failed to generate Group Identify JSON Object for groupType %s", groupType), e
+            );
+        }
+        logEventAsync(
+            Constants.GROUP_IDENTIFY_EVENT, null, null, null, group,
+            groupIdentify.userPropertiesOperations, getCurrentTimeMillis(), outOfSession
+        );
     }
 
     /**
@@ -1468,7 +1623,7 @@ public class AmplitudeClient {
      * @param value the value
      * @return the truncated string
      */
-    public String truncate(String value) {
+    public static String truncate(String value) {
         return value.length() <= Constants.MAX_STRING_LENGTH ? value :
                 value.substring(0, Constants.MAX_STRING_LENGTH);
     }
@@ -1490,6 +1645,18 @@ public class AmplitudeClient {
      * @return the AmplitudeClient
      */
     public AmplitudeClient setUserId(final String userId) {
+        return setUserId(userId, false);
+    }
+
+    /**
+     * Sets the user id (can be null).
+     * If startNewSession is true, ends the session for the previous user and starts a new
+     * session for the new user id.
+     *
+     * @param userId the user id
+     * @return the AmplitudeClient
+     */
+    public AmplitudeClient setUserId(final String userId, final boolean startNewSession) {
         if (!contextAndApiKeySet("setUserId()")) {
             return this;
         }
@@ -1498,11 +1665,27 @@ public class AmplitudeClient {
         runOnLogThread(new Runnable() {
             @Override
             public void run() {
-                if (TextUtils.isEmpty(client.apiKey)) {  // in case initialization failed
+                if (Utils.isEmptyString(client.apiKey)) {  // in case initialization failed
                     return;
                 }
+
+                // end previous session
+                if (startNewSession && trackingSessionEvents) {
+                    sendSessionEvent(END_SESSION_EVENT);
+                }
+
                 client.userId = userId;
                 dbHelper.insertOrReplaceKeyValue(USER_ID_KEY, userId);
+
+                // start new session
+                if (startNewSession) {
+                    long timestamp = getCurrentTimeMillis();
+                    setSessionId(timestamp);
+                    refreshSessionTime(timestamp);
+                    if (trackingSessionEvents) {
+                        sendSessionEvent(START_SESSION_EVENT);
+                    }
+                }
             }
         });
         return this;
@@ -1543,7 +1726,7 @@ public class AmplitudeClient {
      */
     public AmplitudeClient setDeviceId(final String deviceId) {
         Set<String> invalidDeviceIds = getInvalidDeviceIds();
-        if (!contextAndApiKeySet("setDeviceId()") || TextUtils.isEmpty(deviceId) ||
+        if (!contextAndApiKeySet("setDeviceId()") || Utils.isEmptyString(deviceId) ||
                 invalidDeviceIds.contains(deviceId)) {
             return this;
         }
@@ -1552,7 +1735,7 @@ public class AmplitudeClient {
         runOnLogThread(new Runnable() {
             @Override
             public void run() {
-                if (TextUtils.isEmpty(client.apiKey)) {  // in case initialization failed
+                if (Utils.isEmptyString(client.apiKey)) {  // in case initialization failed
                     return;
                 }
                 client.deviceId = deviceId;
@@ -1580,7 +1763,7 @@ public class AmplitudeClient {
         runOnLogThread(new Runnable() {
             @Override
             public void run() {
-                if (TextUtils.isEmpty(client.apiKey)) { // in case initialization failed
+                if (Utils.isEmptyString(client.apiKey)) { // in case initialization failed
                     return;
                 }
                 String randomId = DeviceInfo.generateUUID() + "R";
@@ -1601,7 +1784,7 @@ public class AmplitudeClient {
         logThread.post(new Runnable() {
             @Override
             public void run() {
-                if (TextUtils.isEmpty(apiKey)) {  // in case initialization failed
+                if (Utils.isEmptyString(apiKey)) {  // in case initialization failed
                     return;
                 }
                 updateServer();
@@ -1628,6 +1811,7 @@ public class AmplitudeClient {
      */
     protected void updateServer() {
         updateServer(false);
+        Diagnostics.getLogger().flushEvents();
     }
 
     /**
@@ -1678,6 +1862,7 @@ public class AmplitudeClient {
             } catch (JSONException e) {
                 uploadingCurrently.set(false);
                 logger.e(TAG, e.toString());
+                Diagnostics.getLogger().logError("Failed to update server", e);
 
             // handle CursorWindowAllocationException when fetching events, defer upload
             } catch (CursorWindowAllocationException e) {
@@ -1686,6 +1871,7 @@ public class AmplitudeClient {
                     "Caught Cursor window exception during event upload, deferring upload: %s",
                     e.getMessage()
                 ));
+                Diagnostics.getLogger().logError("Failed to update server", e);
             }
         }
     }
@@ -1778,6 +1964,7 @@ public class AmplitudeClient {
             // http://stackoverflow.com/questions/5049524/is-java-utf-8-charset-exception-possible,
             // this will never be thrown
             logger.e(TAG, e.toString());
+            Diagnostics.getLogger().logError("Failed to compute checksum for upload request", e);
         }
 
         FormBody body = new FormBody.Builder()
@@ -1798,6 +1985,7 @@ public class AmplitudeClient {
         } catch (IllegalArgumentException e) {
             logger.e(TAG, e.toString());
             uploadingCurrently.set(false);
+            Diagnostics.getLogger().logError("Failed to build upload request", e);
             return;
         }
 
@@ -1865,21 +2053,26 @@ public class AmplitudeClient {
             // logger.w(TAG,
             // "No internet connection found, unable to upload events");
             lastError = e;
+            Diagnostics.getLogger().logError("Failed to post upload request", e);
         } catch (java.net.UnknownHostException e) {
             // logger.w(TAG,
             // "No internet connection found, unable to upload events");
             lastError = e;
+            Diagnostics.getLogger().logError("Failed to post upload request", e);
         } catch (IOException e) {
             logger.e(TAG, e.toString());
             lastError = e;
+            Diagnostics.getLogger().logError("Failed to post upload request", e);
         } catch (AssertionError e) {
             // This can be caused by a NoSuchAlgorithmException thrown by DefaultHttpClient
             logger.e(TAG, "Exception:", e);
             lastError = e;
+            Diagnostics.getLogger().logError("Failed to post upload request", e);
         } catch (Exception e) {
             // Just log any other exception so things don't crash on upload
             logger.e(TAG, "Exception:", e);
             lastError = e;
+            Diagnostics.getLogger().logError("Failed to post upload request", e);
         }
 
         if (!uploadSuccess) {
@@ -1916,16 +2109,16 @@ public class AmplitudeClient {
 
         // see if device id already stored in db
         String deviceId = dbHelper.getValue(DEVICE_ID_KEY);
-        if (!(TextUtils.isEmpty(deviceId) || invalidIds.contains(deviceId))) {
+        if (!(Utils.isEmptyString(deviceId) || invalidIds.contains(deviceId))) {
             return deviceId;
         }
 
-        if (!newDeviceIdPerInstall && useAdvertisingIdForDeviceId) {
+        if (!newDeviceIdPerInstall && useAdvertisingIdForDeviceId && !deviceInfo.isLimitAdTrackingEnabled()) {
             // Android ID is deprecated by Google.
             // We are required to use Advertising ID, and respect the advertising ID preference
 
             String advertisingId = deviceInfo.getAdvertisingId();
-            if (!(TextUtils.isEmpty(advertisingId) || invalidIds.contains(advertisingId))) {
+            if (!(Utils.isEmptyString(advertisingId) || invalidIds.contains(advertisingId))) {
                 dbHelper.insertOrReplaceKeyValue(DEVICE_ID_KEY, advertisingId);
                 return advertisingId;
             }
@@ -1968,7 +2161,7 @@ public class AmplitudeClient {
                     + methodName);
             return false;
         }
-        if (TextUtils.isEmpty(apiKey)) {
+        if (Utils.isEmptyString(apiKey)) {
             logger.e(TAG,
                     "apiKey cannot be null or empty, set apiKey with initialize() before calling "
                             + methodName);
@@ -2086,6 +2279,7 @@ public class AmplitudeClient {
 
         } catch (Exception e) {
             logger.e(TAG, "Error upgrading shared preferences", e);
+            Diagnostics.getLogger().logError("Failed to upgrade shared prefs", e);
             return false;
         }
     }
@@ -2121,7 +2315,7 @@ public class AmplitudeClient {
         String deviceId = dbHelper.getValue(DEVICE_ID_KEY);
         Long previousSessionId = dbHelper.getLongValue(PREVIOUS_SESSION_ID_KEY);
         Long lastEventTime = dbHelper.getLongValue(LAST_EVENT_TIME_KEY);
-        if (!TextUtils.isEmpty(deviceId) && previousSessionId != null && lastEventTime != null) {
+        if (!Utils.isEmptyString(deviceId) && previousSessionId != null && lastEventTime != null) {
             return true;
         }
 
@@ -2173,11 +2367,11 @@ public class AmplitudeClient {
 
     private static void migrateStringValue(SharedPreferences prefs, String prefKey, String defValue, DatabaseHelper dbHelper, String dbKey) {
         String value = dbHelper.getValue(dbKey);
-        if (!TextUtils.isEmpty(value)) {
+        if (!Utils.isEmptyString(value)) {
             return;
         }
         String oldValue = prefs.getString(prefKey, defValue);
-        if (!TextUtils.isEmpty(oldValue)) {
+        if (!Utils.isEmptyString(oldValue)) {
             dbHelper.insertOrReplaceKeyValue(dbKey, oldValue);
             prefs.edit().remove(prefKey).apply();
         }

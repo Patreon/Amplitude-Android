@@ -1,7 +1,5 @@
 package com.amplitude.api;
 
-import android.text.TextUtils;
-
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -24,6 +22,10 @@ public class Utils {
     static JSONObject cloneJSONObject(final JSONObject obj) {
         if (obj == null) {
             return null;
+        }
+
+        if (obj.length() == 0) {
+            return new JSONObject();
         }
 
         // obj.names returns null if the json obj is empty.
@@ -91,8 +93,12 @@ public class Utils {
         return false;
     }
 
+    public static boolean isEmptyString(String s) {
+        return (s == null || s.length() == 0);
+    }
+
     static String normalizeInstanceName(String instance) {
-        if (TextUtils.isEmpty(instance)) {
+        if (isEmptyString(instance)) {
             instance = Constants.DEFAULT_INSTANCE;
         }
         return instance.toLowerCase();

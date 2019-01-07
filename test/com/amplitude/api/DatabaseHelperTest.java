@@ -28,8 +28,6 @@ public class DatabaseHelperTest extends BaseTest {
     @Before
     public void setUp() throws Exception {
         super.setUp(false);
-        amplitude.initialize(context, apiKey);
-        Shadows.shadowOf(amplitude.logThread.getLooper()).runOneTask();
         dbInstance = DatabaseHelper.getDatabaseHelper(context);
     }
 
@@ -76,11 +74,8 @@ public class DatabaseHelperTest extends BaseTest {
     @Test
     public void testCreate() {
         dbInstance.onCreate(dbInstance.getWritableDatabase());
-        // AmplitudeClient.initialize will deviceId to DB, so there's already 1 entry in str table
-        assertEquals(2, insertOrReplaceKeyValue("test_key", "test_value"));
-        // due to upgradeSharedPrefsToDb, there are already 5 entries in long table
-        // so this next insertion will be row 6
-        assertEquals(6, insertOrReplaceKeyLongValue("test_key", 1L));
+        assertEquals(1, insertOrReplaceKeyValue("test_key", "test_value"));
+        assertEquals(1, insertOrReplaceKeyLongValue("test_key", 1L));
         assertEquals(1, addEvent("test_create"));
         assertEquals(1, addIdentify("test_create"));
     }
@@ -496,6 +491,8 @@ public class DatabaseHelperTest extends BaseTest {
     public void testGetDatabaseHelper() {
         assertEquals(DatabaseHelper.instances.size(), 1);
         DatabaseHelper oldDbHelper = DatabaseHelper.getDatabaseHelper(context);
+        assertEquals(oldDbHelper.getEventCount(), 0);  // run query to initialize db file
+
         assertSame(oldDbHelper, DatabaseHelper.getDatabaseHelper(context, null));
         assertSame(oldDbHelper, DatabaseHelper.getDatabaseHelper(context, ""));
         assertSame(
