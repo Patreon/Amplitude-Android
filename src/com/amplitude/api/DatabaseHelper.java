@@ -321,7 +321,14 @@ class DatabaseHelper extends SQLiteOpenHelper {
                 String.format("DB: Failed to getValue: %s", key), e
             );
             delete();
+        } catch (IllegalStateException e) {  // put before Runtime since IllegalState extends
+            // cursor window row too big exception
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getValue: %s", key), e
+            );
+            handleIfCursorRowTooLargeException(e);
         } catch (RuntimeException e) {
+            // cursor window allocation exception
             Diagnostics.getLogger().logError(
                 String.format("DB: Failed to getValue: %s", key), e
             );
@@ -382,7 +389,14 @@ class DatabaseHelper extends SQLiteOpenHelper {
                 String.format("DB: Failed to getEventsFromTable %s", table), e
             );
             delete();
+        } catch (IllegalStateException e) {  // put before Runtime since IllegalState extends
+            // cursor window row too big exception
+            Diagnostics.getLogger().logError(
+                String.format("DB: Failed to getEventsFromTable %s", table), e
+            );
+            handleIfCursorRowTooLargeException(e);
         } catch (RuntimeException e) {
+            // cursor window allocation exception
             Diagnostics.getLogger().logError(
                 String.format("DB: Failed to getEventsFromTable %s", table), e
             );
@@ -589,6 +603,19 @@ class DatabaseHelper extends SQLiteOpenHelper {
         String[] selectionArgs, String groupBy, String having, String orderBy, String limit
     ) {
         return db.query(table, columns, selection, selectionArgs, groupBy, having, orderBy, limit);
+    }
+
+    /*
+        Checks if the IllegalStateException is caused by CursorWindow row too big exception
+        If it is, then we want to reset the database to clear the bad data
+     */
+    private void handleIfCursorRowTooLargeException(IllegalStateException e) {
+        String message = e.getMessage();
+        if (!Utils.isEmptyString(message) && message.contains("Couldn't read") && message.contains("CursorWindow")) {
+            delete();
+        } else {
+            throw e;
+        }
     }
 
     /*

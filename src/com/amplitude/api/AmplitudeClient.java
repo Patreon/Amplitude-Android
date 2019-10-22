@@ -363,13 +363,6 @@ public class AmplitudeClient {
         return this;
     }
 
-    // this method should only be called from the background log thread
-    private void initializeDeviceInfo() {
-        deviceInfo = new DeviceInfo(context);
-        deviceId = initializeDeviceId();
-        deviceInfo.prefetch();
-    }
-
     /**
      * Whether to set a new device ID per install. If true, then the SDK will always generate a new
      * device ID on app install (as opposed to re-using an existing value like ADID).
@@ -1181,12 +1174,12 @@ public class AmplitudeClient {
     }
 
     /**
-     * Internal method to start a new session if needed.
+     * Public method to start a new session if needed.
      *
      * @param timestamp the timestamp
      * @return whether or not a new session was started
      */
-    boolean startNewSessionIfNeeded(long timestamp) {
+    public boolean startNewSessionIfNeeded(long timestamp) {
         if (inSession()) {
 
             if (isWithinMinTimeBetweenSessions(timestamp)) {
@@ -1746,7 +1739,7 @@ public class AmplitudeClient {
                     return;
                 }
                 client.deviceId = deviceId;
-                dbHelper.insertOrReplaceKeyValue(DEVICE_ID_KEY, deviceId);
+                saveDeviceId(deviceId);
             }
         });
         return this;
@@ -2116,8 +2109,20 @@ public class AmplitudeClient {
 
         // see if device id already stored in db
         String deviceId = dbHelper.getValue(DEVICE_ID_KEY);
+        String sharedPrefDeviceId = Utils.getStringFromSharedPreferences(context, instanceName, DEVICE_ID_KEY);
         if (!(Utils.isEmptyString(deviceId) || invalidIds.contains(deviceId))) {
+            // compare against device id stored in backup storage and update if necessary
+            if (!deviceId.equals(sharedPrefDeviceId)) {
+                saveDeviceId(deviceId);
+            }
+
             return deviceId;
+        }
+
+        // backup #1: check if device id is stored in shared preferences
+        if (!(Utils.isEmptyString(sharedPrefDeviceId) || invalidIds.contains(sharedPrefDeviceId))) {
+            saveDeviceId(sharedPrefDeviceId);
+            return sharedPrefDeviceId;
         }
 
         if (!newDeviceIdPerInstall && useAdvertisingIdForDeviceId && !deviceInfo.isLimitAdTrackingEnabled()) {
@@ -2126,7 +2131,7 @@ public class AmplitudeClient {
 
             String advertisingId = deviceInfo.getAdvertisingId();
             if (!(Utils.isEmptyString(advertisingId) || invalidIds.contains(advertisingId))) {
-                dbHelper.insertOrReplaceKeyValue(DEVICE_ID_KEY, advertisingId);
+                saveDeviceId(advertisingId);
                 return advertisingId;
             }
         }
@@ -2134,8 +2139,13 @@ public class AmplitudeClient {
         // If this still fails, generate random identifier that does not persist
         // across installations. Append R to distinguish as randomly generated
         String randomId = deviceInfo.generateUUID() + "R";
-        dbHelper.insertOrReplaceKeyValue(DEVICE_ID_KEY, randomId);
+        saveDeviceId(randomId);
         return randomId;
+    }
+
+    private void saveDeviceId(String deviceId) {
+        dbHelper.insertOrReplaceKeyValue(DEVICE_ID_KEY, deviceId);
+        Utils.writeStringToSharedPreferences(context, instanceName, DEVICE_ID_KEY, deviceId);
     }
 
     protected void runOnLogThread(Runnable r) {

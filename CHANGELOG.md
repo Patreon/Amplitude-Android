@@ -1,5 +1,21 @@
 ## Unreleased
 
+## 2.23.2 (August 05, 2019)
+
+* Catch exceptions when fetching most recent location.
+
+## 2.23.1 (July 19, 2019)
+
+* Handle SQLite database crashes caused by fetching events that exceed 2MB (max size of cursor window).
+
+## 2.23.0 (April 22, 2019)
+
+* Make `startNewSessionIfNeeded` a public method. Only call this if you know what you are doing. This may trigger a new session to start.
+
+## 2.22.1 (March 21, 2019)
+
+* Store deviceId in SharedPreferences as backup in case SQLite database fails or becomes corrupted.
+
 ## 2.22.0 (January 18, 2019)
 
 * Add ability to set a custom server URL for uploading events using `setServerUrl`.
