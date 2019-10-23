@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.database.sqlite.SQLiteDatabase;
 import android.location.Location;
 import android.os.Build;
+import android.text.TextUtils;
 import android.util.Pair;
 
 import com.amplitude.security.MD5;
