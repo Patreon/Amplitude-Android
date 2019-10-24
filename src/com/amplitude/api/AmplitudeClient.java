@@ -18,7 +18,7 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
-import java.sql.SQLException;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -398,8 +398,8 @@ public class AmplitudeClient {
             @Override
             public void run() {
                 if (deviceInfo == null) {
-		    throw new IllegalStateException(
-		            "Must initialize before acting on location listening.");
+                    throw new IllegalStateException(
+                            "Must initialize before acting on location listening.");
                 }
                 deviceInfo.setLocationListening(true);
             }
@@ -418,8 +418,8 @@ public class AmplitudeClient {
             @Override
             public void run() {
                 if (deviceInfo == null) {
-		    throw new IllegalStateException(
-		            "Must initialize before acting on location listening.");
+                    throw new IllegalStateException(
+                            "Must initialize before acting on location listening.");
                 }
                 deviceInfo.setLocationListening(false);
             }
@@ -1842,6 +1842,19 @@ public class AmplitudeClient {
             try {
                 List<JSONObject> events = dbHelper.getEvents(lastEventId, batchSize);
                 List<JSONObject> identifys = dbHelper.getIdentifys(lastIdentifyId, batchSize);
+
+                // Fix time logging to match what our /tracking endpoint expects.
+                // 1. Rename `timestamp` key to `client_event_time`
+                // 2. Add `client_upload_time` as seconds since epoch
+                long uploadTimeSeconds = new Date().getTime() / 1000L;
+                for (JSONObject event : events) {
+                    if (event.has("timestamp")) {
+                        event.put("client_event_time", event.getLong("timestamp"));
+                        event.remove("timestamp");
+                    }
+
+                    event.put("client_upload_time", uploadTimeSeconds);
+                }
 
                 final Pair<Pair<Long, Long>, JSONArray> merged = mergeEventsAndIdentifys(
                         events, identifys, batchSize);
