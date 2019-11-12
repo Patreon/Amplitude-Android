@@ -1845,15 +1845,15 @@ public class AmplitudeClient {
 
                 // Fix time logging to match what our /tracking endpoint expects.
                 // 1. Rename `timestamp` key to `client_event_time`
-                // 2. Add `client_upload_time` as seconds since epoch
-                long uploadTimeSeconds = new Date().getTime() / 1000L;
+                // 2. Add `client_upload_time` as ms since epoch
+                long uploadTimeMs = new Date().getTime();
                 for (JSONObject event : events) {
                     if (event.has("timestamp")) {
                         event.put("client_event_time", event.getLong("timestamp"));
                         event.remove("timestamp");
                     }
 
-                    event.put("client_upload_time", uploadTimeSeconds);
+                    event.put("client_upload_time", uploadTimeMs);
                 }
 
                 final Pair<Pair<Long, Long>, JSONArray> merged = mergeEventsAndIdentifys(
