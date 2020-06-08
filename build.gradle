@@ -1,34 +1,240 @@
+group = ARTIFACT_GROUP
+version = ARTIFACT_VERSION
+
+buildscript {
+    repositories {
+        google()
+        jcenter()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:3.5.2'
+    }
+}
+
 apply plugin: 'com.android.library'
+apply plugin: 'maven'
+apply plugin: 'signing'
+
+ext {
+    artifactId = 'amplitude-android-sdk'
+}
+
+repositories {
+    // The order in which you list these repositories matter.
+    google()
+    jcenter()
+}
 
 android {
-    compileSdkVersion 29
-    buildToolsVersion "29.0.1"
+    compileSdkVersion 28
+    buildToolsVersion '28.0.3'
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
 
     defaultConfig {
-        minSdkVersion 21
-        targetSdkVersion 29
-        versionCode 1
-        versionName "1.0"
+        minSdkVersion 14
+        // Note: Can't target to the latest 29 now, since running Robolectric tests on 29 will
+        // require Java 9 above. However, Android Studio will error out when setting up Java to 9
+        // above.
+        targetSdkVersion 28
+
+        buildConfigField "String", "AMPLITUDE_VERSION", "\"${version}\""
+
+        testInstrumentationRunner 'androidx.test.ext.junit.runners.AndroidJUnit4'
+
+        // The following argument makes the Android Test Orchestrator run its
+        // "pm clear" command after each test invocation. This command ensures
+        // that the app's state is completely cleared between tests.
+        testInstrumentationRunnerArguments clearPackageData: 'true'
     }
 
-    buildTypes {
-        release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
+    lintOptions {
+        abortOnError true
+        textReport true
+        warningsAsErrors false
     }
 
-    sourceSets {
-        main.java.srcDirs += 'src'
+    testOptions {
+        unitTests.includeAndroidResources = true
     }
 }
 
 dependencies {
-    implementation 'com.squareup.okhttp3:okhttp:3.10.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.2.2'
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.2.2'
+    testImplementation 'org.robolectric:robolectric:4.3.1'
+    testImplementation 'org.robolectric:shadows-maps:3.4-rc2'
+    testImplementation 'org.powermock:powermock-module-junit4:1.6.6'
+    testImplementation 'org.powermock:powermock-module-junit4-rule:1.6.6'
+    testImplementation 'org.powermock:powermock-api-mockito:1.6.6'
+    testImplementation 'org.powermock:powermock-classloading-xstream:1.6.6'
+    testImplementation 'com.google.android:support-v4:r6'
+    testImplementation 'com.google.android.gms:play-services-ads:18.3.0'
+    testImplementation 'com.google.android.gms:play-services-base:17.1.0'
+
+    testImplementation "junit:junit:4.12"
+
+    // Core library
+    testImplementation 'androidx.test:core:1.2.0'
+
+    // AndroidJUnitRunner and JUnit Rules
+    testImplementation 'androidx.test:runner:1.2.0'
+    testImplementation 'androidx.test:rules:1.2.0'
+
+    // Assertions
+    testImplementation 'androidx.test.ext:junit:1.1.1'
 }
 
-afterEvaluate {
-    // Exclude BuildConfig generation to avoid conflicts with application's BuildConfig
-    generateReleaseBuildConfig.enabled = false
-    generateDebugBuildConfig.enabled = false
+// ======== For SDK Releases ========
+uploadArchives {
+    repositories.mavenDeployer {
+        beforeDeployment {
+            MavenDeployment deployment -> signing.signPom(deployment)
+        }
+
+        pom.groupId = ARTIFACT_GROUP
+        pom.version = ARTIFACT_VERSION
+
+        pom.project {
+            name project.name
+            version ARTIFACT_VERSION
+            packaging POM_PACKAGING
+            description POM_DESCRIPTION
+            url POM_URL
+
+            scm {
+                url POM_SCM_URL
+                connection POM_SCM_CONNECTION
+                developerConnection POM_SCM_DEV_CONNECTION
+            }
+
+            licenses {
+                license {
+                    name POM_LICENCE_NAME
+                    url POM_LICENCE_URL
+                    distribution POM_LICENCE_DIST
+                }
+            }
+            developers {
+                developer {
+                    id POM_DEVELOPER_ID
+                    name POM_DEVELOPER_NAME
+                    email POM_DEVELOPER_EMAIL
+                    organization POM_DEVELOPER_ORG
+                    organizationUrl POM_DEVELOPER_ORG_URL
+                }
+            }
+        }
+
+        pom.whenConfigured { pom ->
+            pom.dependencies*.optional = true
+        }
+
+        repository(url: RELEASE_REPOSITORY_URL) {
+            authentication(userName: getRepositoryUsername(), password: getRepositoryPassword())
+        }
+        snapshotRepository(url: SNAPSHOT_REPOSITORY_URL) {
+            authentication(userName: getRepositoryUsername(), password: getRepositoryPassword())
+        }
+    }
+}
+
+task install(type: Upload, dependsOn: assemble) {
+    repositories.mavenInstaller {
+        configuration = configurations.archives
+
+        pom.groupId = ARTIFACT_GROUP
+        pom.version = ARTIFACT_VERSION
+
+        pom.project {
+            name project.name
+            version ARTIFACT_VERSION
+            packaging POM_PACKAGING
+            description POM_DESCRIPTION
+            url POM_URL
+
+            scm {
+                url POM_SCM_URL
+                connection POM_SCM_CONNECTION
+                developerConnection POM_SCM_DEV_CONNECTION
+            }
+
+            licenses {
+                license {
+                    name POM_LICENCE_NAME
+                    url POM_LICENCE_URL
+                    distribution POM_LICENCE_DIST
+                }
+            }
+            developers {
+                developer {
+                    id POM_DEVELOPER_ID
+                    name POM_DEVELOPER_NAME
+                    email POM_DEVELOPER_EMAIL
+                    organization POM_DEVELOPER_ORG
+                    organizationUrl POM_DEVELOPER_ORG_URL
+                }
+            }
+        }
+    }
+}
+
+task androidJavadocs(type: Javadoc, dependsOn: ':generateReleaseBuildConfig') {
+    source = android.sourceSets.main.java.srcDirs
+    classpath += project.files(android.getBootClasspath().join(File.pathSeparator))
+    classpath += project.files('build/generated/source/buildConfig/release')
+
+    exclude(
+            '**/R.*',
+            '**/security/**',
+            '**/unity/**',
+            '**/api/AmplitudeLog.java',
+            '**/api/Constants.java',
+            '**/api/DeviceInfo.java',
+            '**/api/Utils.java',
+            '**/api/WorkerThread.java',
+            '**/api/CursorWindowAllocationException.java'
+    )
+    options {
+        encoding = 'UTF-8'
+        docEncoding = 'UTF-8'
+        charSet = 'UTF-8'
+    }
+    failOnError false
+}
+
+task androidJavadocsJar(type: Jar, dependsOn: androidJavadocs) {
+    classifier = 'javadoc'
+    from androidJavadocs.destinationDir
+}
+
+task androidSourcesJar(type: Jar) {
+    classifier = 'sources'
+    from android.sourceSets.main.java.srcDirs
+}
+
+signing {
+    required { isReleaseBuild() && gradle.taskGraph.hasTask(":uploadArchives") }
+    sign configurations.archives
+}
+
+artifacts {
+    archives androidSourcesJar
+    archives androidJavadocsJar
+}
+
+def isReleaseBuild() {
+    return version.contains("SNAPSHOT") == false
+}
+
+def getRepositoryUsername() {
+    return hasProperty('sonatypeUsername') ? sonatypeUsername : ""
+}
+
+def getRepositoryPassword() {
+    return hasProperty('sonatypePassword') ? sonatypePassword : ""
 }
